@@ -178,7 +178,7 @@
 					</execution>
 				</executions>
 				<configuration>
-					<mainClass>io.projectriff.processor.EntryPoint</mainClass>
+					<mainClass>io.projectriff.processor.Processor</mainClass>
 				</configuration>
 			</plugin>
 			<plugin>
