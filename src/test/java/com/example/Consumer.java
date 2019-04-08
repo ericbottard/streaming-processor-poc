@@ -34,18 +34,6 @@ public class Consumer {
 
         var stub = ReactorLiiklusServiceGrpc.newReactorStub(channel);
 
-        // Send an event every second
-        Flux.interval(Duration.ofSeconds(1))
-                .onBackpressureDrop()
-                .concatMap(it -> stub.publish(
-                        PublishRequest.newBuilder()
-                                .setTopic("numbers")
-                                .setKey(ByteString.copyFromUtf8(UUID.randomUUID().toString()))
-                                .setValue(ByteString.copyFromUtf8(UUID.randomUUID().toString()))
-                                .build()
-                ))
-                .subscribe();
-
         // Consume the events
         Function<Integer, Function<ReceiveReply.Record, Publisher<?>>> businessLogic = partition -> record -> {
             System.out.format("Processing record from partition %d offset %d: %s%n", partition, record.getOffset(), record);
@@ -84,20 +72,4 @@ public class Consumer {
                 .blockLast();
     }
 
-    private static String getLiiklusTarget() {
-        var kafka = new KafkaContainer()
-                .withEnv("KAFKA_NUM_PARTITIONS", "4");
-
-        GenericContainer liiklus = new GenericContainer<>("bsideup/liiklus:0.8.1")
-                .withNetwork(kafka.getNetwork())
-                .withExposedPorts(6565)
-                .withEnv("kafka_bootstrapServers", kafka.getNetworkAliases().get(0) + ":9093")
-                .withEnv("storage_positions_type", "MEMORY"); // Fine for testing, NOT FINE I WARNED YOU for production :D
-
-        Stream.of(kafka, liiklus).parallel().forEach(GenericContainer::start);
-
-        System.out.format("Containers started");
-
-        return String.format("%s:%d", liiklus.getContainerIpAddress(), liiklus.getFirstMappedPort());
-    }
 }

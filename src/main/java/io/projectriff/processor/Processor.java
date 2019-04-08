@@ -2,6 +2,10 @@ package io.projectriff.processor;
 
 import java.io.IOException;
 import java.net.URI;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.github.bsideup.liiklus.protocol.Assignment;
 import com.github.bsideup.liiklus.protocol.PublishRequest;
@@ -11,7 +15,6 @@ import com.github.bsideup.liiklus.protocol.ReceiveRequest;
 import com.github.bsideup.liiklus.protocol.SubscribeReply;
 import com.github.bsideup.liiklus.protocol.SubscribeRequest;
 import io.grpc.Channel;
-import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -21,19 +24,46 @@ import io.projectriff.invoker.server.RiffClient;
 import io.rsocket.RSocket;
 import io.rsocket.RSocketFactory;
 import io.rsocket.transport.netty.client.WebsocketClientTransport;
+import org.reactivestreams.Publisher;
+import reactor.core.publisher.DirectProcessor;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.GroupedFlux;
 
 public class Processor {
 
-	private final Flux<String> input;
+	private final List<String> inputs;
 
 	private String group;
 
-	private String output;
+	private final List<String> outputs;
 
 	private RiffClient riffStub;
 
 	private ReactorLiiklusServiceGrpc.ReactorLiiklusServiceStub liiklus;
+
+	/*
+	 * SHORTCOMINGS: Liiklus doesn't support Kafka headers
+	 */
+
+	/*
+	Nest steps?
+
+P1  Use cases that actually use multiple inputs/outputs (see KStreams)
+P1	Multiple GWs (and hence brokers)   (action)
+	Rewrite in go?  (action)
+	  Swap protocols?  ==>  or P1 == P2 == gRPC
+	(Java)Invoker actually supporting several inputs/outputs  (action)
+P1  Containerize
+
+P1  Update Java builder/invoker to latest riff contract
+
+P1	CRDs <=> This code  (action)
+
+	ACKs
+
+	Think about Processor-based windowing (discussion)
+	Serialization ? Content-based topics, etc   (discussion)
+	 */
 
 	public static void main(String[] args) throws IOException {
 
@@ -46,7 +76,7 @@ public class Processor {
 				.build();
 
 		WebsocketClientTransport websocketClientTransport = WebsocketClientTransport
-				.create(URI.create("ws://kmprssr2.default.35.241.251.246.nip.io/ws"));
+				.create(URI.create("ws://kmprssr3.default.35.241.251.246.nip.io/ws"));
 		RSocket rSocket = RSocketFactory
 				.connect()
 				.transport(websocketClientTransport)
@@ -61,9 +91,6 @@ public class Processor {
 		sInputs = "numbers";
 		sOutputs = "squares";
 
-		var inputs = Flux.fromArray(sInputs.split(","));
-		var outputs = Flux.fromArray(sOutputs.split(","));
-
 		Processor processor = new Processor(channel, rSocket, group, sInputs, sOutputs);
 		processor.run();
 
@@ -73,81 +100,70 @@ public class Processor {
 		this.liiklus = ReactorLiiklusServiceGrpc.newReactorStub(channel);
 		this.riffStub = new RiffClient(rSocket);
 		this.group = group;
-		this.input = Flux.just(sInputs);
-		this.output = sOutputs;
+		this.inputs = Arrays.asList(sInputs.split(","));
+		this.outputs = Arrays.asList(sOutputs.split(","));;
 
 	}
 
 	public void run() throws IOException {
 
-
-		/*
-		 * inputs.map(Processor::subscribeRequestForInput) .flatMap(liiklusStub::subscribe)
-		 * .filter(Processor::isAssignment) .map(SubscribeReply::getAssignment)
-		 * .map(Processor::receiveRequestForAssignment) .flatMap(liiklusStub::receive)
-		 * .map(Processor::toRiffMessage) .compose(Processor::riffWindowing) .doOnEach(f -> )
-		 * 
-		 * ;
-		 */
-
-		input.map(this::subscribeRequestForInput)
-				.flatMap(liiklus::subscribe)
-				.log("A")
-				.filter(this::isAssignment)
-				.log("B")
-				.map(SubscribeReply::getAssignment)
-				.log("C")
-				.map(this::receiveRequestForAssignment)
-				.log("D")
-				.flatMap(liiklus::receive)
-				.log("E")
-				.map(this::toRiffMessage)
-				.log("F")
-				.compose(this::riffWindowing)
-				.log("G")
-				.map(this::invoke)
-				.log("H")
-				.concatMap(f -> f.concatMap(m -> liiklus.publish(createPR(m))))
-				.log("I")
+		Flux.fromIterable(inputs)
+				.map(this::subscribeRequestForInput)
+				.flatMap(
+						subscribeRequest -> liiklus.subscribe(subscribeRequest)
+								.filter(this::isAssignment)
+								.map(SubscribeReply::getAssignment)
+								.map(this::receiveRequestForAssignment)
+								.flatMap(liiklus::receive)
+								.map(receiveReply -> toRiffMessage(receiveReply, subscribeRequest))
+								.compose(this::riffWindowing)
+								.map(this::invoke)
+								.concatMap(f -> f.concatMap(m -> liiklus.publish(createPR(m)))))
 				.subscribe();
 
 		System.in.read();
 
 	}
 
-	private  Flux<Message> invoke(Flux<Message> in) {
+	private Flux<Message> invoke(Flux<Message> in) {
 		ByteBuf metadata = ByteBufUtil.writeUtf8(ByteBufAllocator.DEFAULT, "application/json");
-		return riffStub.invoke(in, metadata);
+		Flux<Message> invoke = riffStub.invoke(in, metadata);
+		return invoke.map(m -> Message.newBuilder(m).putHeaders("RiffOutput", "0").build()); // TODO
 	}
 
-	private  PublishRequest createPR(Message m) {
+	private PublishRequest createPR(Message m) {
+		var output = outputs.get(Integer.parseInt(m.getHeadersOrDefault("RiffOutput", "0")));
+
 		return PublishRequest.newBuilder()
 				.setValue(m.getPayload())
 				.setTopic(output)
 				.build();
 	}
 
-	private  ReceiveRequest receiveRequestForAssignment(Assignment assignment) {
+	private ReceiveRequest receiveRequestForAssignment(Assignment assignment) {
 		return ReceiveRequest.newBuilder().setAssignment(assignment).build();
 	}
 
-	private  <T> Flux<Flux<T>> riffWindowing(Flux<T> linear) {
+	private <T> Flux<Flux<T>> riffWindowing(Flux<T> linear) {
 		return linear.window(30);
 	}
 
-	private  Message toRiffMessage(ReceiveReply receiveReply) {
-		// TODO: somehow propagate which input (index) this came from
+	private Message toRiffMessage(ReceiveReply receiveReply, SubscribeRequest subscribeRequest) {
+		var inputIndex = inputs.indexOf(subscribeRequest.getTopic());
+
 		return Message.newBuilder()
 				.setPayload(receiveReply.getRecord().getValue())
 				.putHeaders("Content-Type", "text/plain")
+				.putHeaders("RiffInput", String.valueOf(inputIndex))
 				.build();
+
 	}
 
-	private  boolean isAssignment(SubscribeReply reply) {
+	private boolean isAssignment(SubscribeReply reply) {
 		return reply.getReplyCase() == SubscribeReply.ReplyCase.ASSIGNMENT;
 	}
 
-	private  SubscribeRequest subscribeRequestForInput(String i) {
+	private SubscribeRequest subscribeRequestForInput(String i) {
 		return SubscribeRequest.newBuilder()
 				.setTopic(i)
 				.setGroup(group)
