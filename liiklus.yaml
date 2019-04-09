@@ -1,0 +1,42 @@
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: liiklus
+spec:
+  replicas: 1
+  selector:
+    matchLabels: &labels
+      app: liiklus
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      containers:
+      - name: liiklus
+        image: bsideup/liiklus:0.8.1
+        ports:
+        - containerPort: 6565
+        env:
+        - name: kafka_bootstrapServers
+          value: kafkabroker.default.svc.cluster.local:9092
+        - name: storage_positions_type
+          value: MEMORY
+        - name: storage_records_type
+          value: KAFKA
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: liiklus
+spec:
+  type: LoadBalancer
+  selector:
+    app: liiklus
+  ports:
+  - port: 6565
+    name: liiklus
+    protocol: TCP

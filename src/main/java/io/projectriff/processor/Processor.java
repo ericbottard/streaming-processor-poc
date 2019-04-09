@@ -3,9 +3,7 @@ package io.projectriff.processor;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 
 import com.github.bsideup.liiklus.protocol.Assignment;
 import com.github.bsideup.liiklus.protocol.PublishRequest;
@@ -24,10 +22,7 @@ import io.projectriff.invoker.server.RiffClient;
 import io.rsocket.RSocket;
 import io.rsocket.RSocketFactory;
 import io.rsocket.transport.netty.client.WebsocketClientTransport;
-import org.reactivestreams.Publisher;
-import reactor.core.publisher.DirectProcessor;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.GroupedFlux;
 
 public class Processor {
 
@@ -65,18 +60,18 @@ P1	CRDs <=> This code  (action)
 	Serialization ? Content-based topics, etc   (discussion)
 	 */
 
-	public static void main(String[] args) throws IOException {
+	public static void main(String[] args) throws Exception {
 
 		var gwAddress = System.getenv("GATEWAY");
-		gwAddress = "localhost:6565";
-		gwAddress = "35.204.31.102:6565";
 		var channel = NettyChannelBuilder.forTarget(gwAddress)
 				.directExecutor()
 				.usePlaintext()
 				.build();
 
+		var function = System.getenv("FUNCTION");
+
 		WebsocketClientTransport websocketClientTransport = WebsocketClientTransport
-				.create(URI.create("ws://kmprssr3.default.35.241.251.246.nip.io/ws"));
+				.create(URI.create(function));
 		RSocket rSocket = RSocketFactory
 				.connect()
 				.transport(websocketClientTransport)
@@ -84,12 +79,8 @@ P1	CRDs <=> This code  (action)
 				.block();
 
 		var group = System.getenv("GROUP");
-		group = "processor0";
-
 		var sInputs = System.getenv("INPUTS");
 		var sOutputs = System.getenv("OUTPUTS");
-		sInputs = "numbers";
-		sOutputs = "squares";
 
 		Processor processor = new Processor(channel, rSocket, group, sInputs, sOutputs);
 		processor.run();
@@ -105,7 +96,7 @@ P1	CRDs <=> This code  (action)
 
 	}
 
-	public void run() throws IOException {
+	public void run() throws IOException, InterruptedException {
 
 		Flux.fromIterable(inputs)
 				.map(this::subscribeRequestForInput)
@@ -121,8 +112,10 @@ P1	CRDs <=> This code  (action)
 								.concatMap(f -> f.concatMap(m -> liiklus.publish(createPR(m)))))
 				.subscribe();
 
-		System.in.read();
-
+		Object lock = new Object();
+		synchronized (lock) {
+			lock.wait();
+		}
 	}
 
 	private Flux<Message> invoke(Flux<Message> in) {

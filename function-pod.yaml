@@ -1,0 +1,33 @@
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kmprssr
+spec:
+  replicas: 1
+  selector:
+    matchLabels: &labels
+      function: kmprssr
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      containers:
+      - name: processor
+        image: ericbottard/processor
+        env:
+        - name: GATEWAY
+          value: liiklus.default.svc.cluster.local:6565
+        - name: FUNCTION
+          value: ws://localhost:8080/ws
+        - name: INPUTS
+          value: numbers
+        - name: OUTPUTS
+          value: squares
+        - name: GROUP
+          value: kmprssr
+      - name: function
+        image: ericbottard/kmprssr
+        ports:
+          - containerPort: 8080
