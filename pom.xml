@@ -22,7 +22,7 @@
 		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 		<java.version>11</java.version>
 		<grpc.version>1.15.1</grpc.version>
-		<reactive-grpc.version>0.9.1-SNAPSHOT</reactive-grpc.version>
+		<reactive-grpc.version>0.10.0-RC1</reactive-grpc.version>
 		<reactor.version>3.2.5.RELEASE</reactor.version>
 		<rsocket.version>0.11.8</rsocket.version>
 		<rsocket-rpc.version>0.2.10</rsocket-rpc.version>
