@@ -7,11 +7,21 @@ option java_outer_classname = "Invoker";
 package streaming;
 
 service Riff {
-    rpc Invoke (stream Message) returns (stream Message) {}
+       rpc Invoke(stream Signal) returns (stream Signal) {}
 }
 
-message Message {
+message Start {
+    string accept = 1;
+}
+
+message Next {
     bytes payload = 1;
     map<string, string> headers = 2;
 }
 
+message Signal {
+    oneof value {
+        Start start = 1;
+        Next next = 2;
+    }
+}

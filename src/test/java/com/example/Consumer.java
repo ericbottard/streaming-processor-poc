@@ -29,7 +29,7 @@ public class Consumer {
         var subscribeAction = SubscribeRequest.newBuilder()
                 .setTopic("squares")
                 .setGroup("my-group")
-                .setAutoOffsetReset(AutoOffsetReset.EARLIEST)
+                .setAutoOffsetReset(AutoOffsetReset.LATEST)
                 .build();
 
         var stub = ReactorLiiklusServiceGrpc.newReactorStub(channel);
@@ -39,7 +39,7 @@ public class Consumer {
             System.out.format("Processing record from partition %d offset %d: %s%n", partition, record.getOffset(), record);
 
             // simulate processing
-            return Mono.delay(Duration.ofMillis(200));
+            return Mono.delay(Duration.ofMillis(0));
         };
 
         stub

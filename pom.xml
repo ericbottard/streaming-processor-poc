@@ -31,23 +31,6 @@
 
 	<dependencies>
 
-		<!-- RSocket -->
-		<dependency>
-			<groupId>io.rsocket.rpc</groupId>
-			<artifactId>rsocket-rpc-core</artifactId>
-			<version>${rsocket-rpc.version}</version>
-			<exclusions>
-				<exclusion>
-					<groupId>io.rsocket.rpc</groupId>
-					<artifactId>rsocket-rpc-protobuf</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-		<dependency>
-			<groupId>io.rsocket</groupId>
-			<artifactId>rsocket-transport-netty</artifactId>
-			<version>${rsocket.version}</version>
-		</dependency>
 		<!-- GRPC -->
 		<dependency>
 			<groupId>io.grpc</groupId>
@@ -122,43 +105,20 @@
 					<execution>
 						<id>reactive-grpc</id>
 						<configuration>
-							<clearOutputDirectory>false</clearOutputDirectory>
 							<protocArtifact>com.google.protobuf:protoc:${protoc.version}:exe:${os.detected.classifier}
 							</protocArtifact>
 							<pluginId>grpc-java</pluginId>
 							<pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}
 							</pluginArtifact>
-							<includes>
-								<include>LiiklusService.proto</include>
-							</includes>
 							<protocPlugins>
 								<protocPlugin>
 									<id>reactor-grpc</id>
 									<groupId>com.salesforce.servicelibs</groupId>
 									<artifactId>reactor-grpc</artifactId>
-									<version>0.9.0</version>
+									<version>${reactive-grpc.version}</version>
 									<mainClass>com.salesforce.reactorgrpc.ReactorGrpcGenerator</mainClass>
 								</protocPlugin>
 							</protocPlugins>
-						</configuration>
-						<goals>
-							<goal>compile</goal>
-							<goal>compile-custom</goal>
-						</goals>
-					</execution>
-					<execution>
-						<id>rsocket</id>
-						<configuration>
-							<clearOutputDirectory>false</clearOutputDirectory>
-							<protocArtifact>com.google.protobuf:protoc:${protoc.version}:exe:${os.detected.classifier}
-							</protocArtifact>
-							<pluginId>rsocket-java</pluginId>
-							<pluginArtifact>
-								io.rsocket.rpc:rsocket-rpc-protobuf:${rsocket-rpc.version}:exe:${os.detected.classifier}
-							</pluginArtifact>
-							<includes>
-								<include>riff.proto</include>
-							</includes>
 						</configuration>
 						<goals>
 							<goal>compile</goal>

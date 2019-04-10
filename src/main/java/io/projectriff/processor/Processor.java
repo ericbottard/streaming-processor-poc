@@ -1,7 +1,6 @@
 package io.projectriff.processor;
 
 import java.io.IOException;
-import java.net.URI;
 import java.util.Arrays;
 import java.util.List;
 
@@ -14,14 +13,10 @@ import com.github.bsideup.liiklus.protocol.SubscribeReply;
 import com.github.bsideup.liiklus.protocol.SubscribeRequest;
 import io.grpc.Channel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.ByteBufUtil;
-import io.projectriff.invoker.server.Message;
-import io.projectriff.invoker.server.RiffClient;
-import io.rsocket.RSocket;
-import io.rsocket.RSocketFactory;
-import io.rsocket.transport.netty.client.WebsocketClientTransport;
+import io.projectriff.invoker.server.Next;
+import io.projectriff.invoker.server.ReactorRiffGrpc;
+import io.projectriff.invoker.server.Signal;
+import io.projectriff.invoker.server.Start;
 import reactor.core.publisher.Flux;
 
 public class Processor {
@@ -32,7 +27,7 @@ public class Processor {
 
 	private final List<String> outputs;
 
-	private RiffClient riffStub;
+	private ReactorRiffGrpc.ReactorRiffStub riffStub;
 
 	private ReactorLiiklusServiceGrpc.ReactorLiiklusServiceStub liiklus;
 
@@ -41,58 +36,52 @@ public class Processor {
 	 */
 
 	/*
-	Nest steps?
-
-P1  Use cases that actually use multiple inputs/outputs (see KStreams)
-P1	Multiple GWs (and hence brokers)   (action)
-	Rewrite in go?  (action)
-	  Swap protocols?  ==>  or P1 == P2 == gRPC
-	(Java)Invoker actually supporting several inputs/outputs  (action)
-P1  Containerize
-
-P1  Update Java builder/invoker to latest riff contract
-
-P1	CRDs <=> This code  (action)
-
-	ACKs
-
-	Think about Processor-based windowing (discussion)
-	Serialization ? Content-based topics, etc   (discussion)
+	 * Nest steps?
+	 * 
+	 * P1 Use cases that actually use multiple inputs/outputs (see KStreams) P1 Multiple GWs
+	 * (and hence brokers) (action) Rewrite in go? (action) Swap protocols? ==> or P1 == P2 ==
+	 * gRPC (Java)Invoker actually supporting several inputs/outputs (action) P1 Containerize
+	 * 
+	 * P1 Update Java builder/invoker to latest riff contract
+	 * 
+	 * P1 CRDs <=> This code (action)
+	 * 
+	 * ACKs
+	 * 
+	 * Think about Processor-based windowing (discussion) Serialization ? Content-based
+	 * topics, etc (discussion)
 	 */
 
 	public static void main(String[] args) throws Exception {
 
 		var gwAddress = System.getenv("GATEWAY");
-		var channel = NettyChannelBuilder.forTarget(gwAddress)
+		var gwChannel = NettyChannelBuilder.forTarget(gwAddress)
 				.directExecutor()
 				.usePlaintext()
 				.build();
 
 		var function = System.getenv("FUNCTION");
-
-		WebsocketClientTransport websocketClientTransport = WebsocketClientTransport
-				.create(URI.create(function));
-		RSocket rSocket = RSocketFactory
-				.connect()
-				.transport(websocketClientTransport)
-				.start()
-				.block();
+		var fnChannel = NettyChannelBuilder.forTarget(function)
+				.directExecutor()
+				.usePlaintext()
+				.build();
 
 		var group = System.getenv("GROUP");
 		var sInputs = System.getenv("INPUTS");
 		var sOutputs = System.getenv("OUTPUTS");
 
-		Processor processor = new Processor(channel, rSocket, group, sInputs, sOutputs);
+		Processor processor = new Processor(gwChannel, fnChannel, group, sInputs, sOutputs);
 		processor.run();
 
 	}
 
-	public Processor(Channel channel, RSocket rSocket, String group, String sInputs, String sOutputs) {
-		this.liiklus = ReactorLiiklusServiceGrpc.newReactorStub(channel);
-		this.riffStub = new RiffClient(rSocket);
+	public Processor(Channel gwChannel, Channel fnChannel, String group, String sInputs, String sOutputs) {
+		this.liiklus = ReactorLiiklusServiceGrpc.newReactorStub(gwChannel);
+		this.riffStub = ReactorRiffGrpc.newReactorStub(fnChannel);
 		this.group = group;
 		this.inputs = Arrays.asList(sInputs.split(","));
-		this.outputs = Arrays.asList(sOutputs.split(","));;
+		this.outputs = Arrays.asList(sOutputs.split(","));
+		;
 
 	}
 
@@ -118,17 +107,22 @@ P1	CRDs <=> This code  (action)
 		}
 	}
 
-	private Flux<Message> invoke(Flux<Message> in) {
-		ByteBuf metadata = ByteBufUtil.writeUtf8(ByteBufAllocator.DEFAULT, "application/json");
-		Flux<Message> invoke = riffStub.invoke(in, metadata);
-		return invoke.map(m -> Message.newBuilder(m).putHeaders("RiffOutput", "0").build()); // TODO
+	private Flux<Signal> invoke(Flux<Signal> in) {
+		var start = Signal.newBuilder()
+				.setStart(Start.newBuilder().setAccept("application/json"))
+				.build();
+		return riffStub.invoke(Flux.concat(
+				Flux.just(start), //
+				in
+		));
 	}
 
-	private PublishRequest createPR(Message m) {
-		var output = outputs.get(Integer.parseInt(m.getHeadersOrDefault("RiffOutput", "0")));
+	private PublishRequest createPR(Signal m) {
+		Next next = m.getNext();
+		var output = outputs.get(Integer.parseInt(next.getHeadersOrThrow("RiffOutput")));
 
 		return PublishRequest.newBuilder()
-				.setValue(m.getPayload())
+				.setValue(next.getPayload())
 				.setTopic(output)
 				.build();
 	}
@@ -141,13 +135,15 @@ P1	CRDs <=> This code  (action)
 		return linear.window(30);
 	}
 
-	private Message toRiffMessage(ReceiveReply receiveReply, SubscribeRequest subscribeRequest) {
+	private Signal toRiffMessage(ReceiveReply receiveReply, SubscribeRequest subscribeRequest) {
 		var inputIndex = inputs.indexOf(subscribeRequest.getTopic());
 
-		return Message.newBuilder()
-				.setPayload(receiveReply.getRecord().getValue())
-				.putHeaders("Content-Type", "text/plain")
-				.putHeaders("RiffInput", String.valueOf(inputIndex))
+		return Signal.newBuilder()
+				.setNext(
+						Next.newBuilder()
+								.setPayload(receiveReply.getRecord().getValue())
+								.putHeaders("Content-Type", "text/plain")
+								.putHeaders("RiffInput", String.valueOf(inputIndex)))
 				.build();
 
 	}

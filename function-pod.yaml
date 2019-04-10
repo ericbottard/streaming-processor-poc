@@ -15,12 +15,12 @@ spec:
     spec:
       containers:
       - name: processor
-        image: ericbottard/processor
+        image: ericbottard/processor:grpc
         env:
         - name: GATEWAY
           value: liiklus.default.svc.cluster.local:6565
         - name: FUNCTION
-          value: ws://localhost:8080/ws
+          value: localhost:8080
         - name: INPUTS
           value: numbers
         - name: OUTPUTS
@@ -28,6 +28,6 @@ spec:
         - name: GROUP
           value: kmprssr
       - name: function
-        image: ericbottard/kmprssr
+        image: ericbottard/kmprssr:grpc
         ports:
           - containerPort: 8080
