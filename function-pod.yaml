@@ -15,19 +15,19 @@ spec:
     spec:
       containers:
       - name: processor
-        image: ericbottard/processor:grpc
+        image: fbiville/processor:grpc
+        imagePullPolicy: Always
         env:
-        - name: GATEWAY
-          value: liiklus.default.svc.cluster.local:6565
         - name: FUNCTION
           value: localhost:8080
         - name: INPUTS
-          value: numbers
+          value: liiklus.default.svc.cluster.local:6565/numbers
         - name: OUTPUTS
-          value: squares
+          value: liiklus.default.svc.cluster.local:6565/squares
         - name: GROUP
           value: kmprssr
       - name: function
         image: ericbottard/kmprssr:grpc
+        imagePullPolicy: Always
         ports:
           - containerPort: 8080
