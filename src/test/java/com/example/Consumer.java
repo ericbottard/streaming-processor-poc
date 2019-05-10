@@ -19,7 +19,7 @@ public class Consumer {
     public static void main(String[] args) {
         // This variable should point to your Liiklus deployment (possible behind a Load Balancer)
         //String liiklusTarget = getLiiklusTarget();
-        String liiklusTarget = "35.204.226.236:6565";
+        String liiklusTarget = "35.241.239.96:6565";
 
         var channel = NettyChannelBuilder.forTarget(liiklusTarget)
                 .directExecutor()
@@ -27,7 +27,7 @@ public class Consumer {
                 .build();
 
         var subscribeAction = SubscribeRequest.newBuilder()
-                .setTopic("squares")
+                .setTopic("repeated")
                 .setGroup("my-group")
                 .setAutoOffsetReset(AutoOffsetReset.LATEST)
                 .build();
@@ -36,7 +36,7 @@ public class Consumer {
 
         // Consume the events
         Function<Integer, Function<ReceiveReply.Record, Publisher<?>>> businessLogic = partition -> record -> {
-            System.out.format("Processing record from partition %d offset %d: %s%n", partition, record.getOffset(), record);
+            System.out.format("%s%n", record.getValue().toStringUtf8());
 
             // simulate processing
             return Mono.delay(Duration.ofMillis(0));
