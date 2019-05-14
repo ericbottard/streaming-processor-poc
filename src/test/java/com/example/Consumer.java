@@ -2,18 +2,13 @@ package com.example;
 
 import com.github.bsideup.liiklus.protocol.*;
 import com.github.bsideup.liiklus.protocol.SubscribeRequest.AutoOffsetReset;
-import com.google.protobuf.ByteString;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import org.reactivestreams.Publisher;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.KafkaContainer;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
-import java.util.UUID;
 import java.util.function.Function;
-import java.util.stream.Stream;
 
 public class Consumer {
     public static void main(String[] args) {
@@ -22,54 +17,35 @@ public class Consumer {
         String liiklusTarget = "35.241.239.96:6565";
 
         var channel = NettyChannelBuilder.forTarget(liiklusTarget)
-                .directExecutor()
-                .usePlaintext(true)
+                .usePlaintext()
                 .build();
 
-        var subscribeAction = SubscribeRequest.newBuilder()
-                .setTopic("repeated")
-                .setGroup("my-group")
-                .setAutoOffsetReset(AutoOffsetReset.LATEST)
-                .build();
 
         var stub = ReactorLiiklusServiceGrpc.newReactorStub(channel);
 
-        // Consume the events
-        Function<Integer, Function<ReceiveReply.Record, Publisher<?>>> businessLogic = partition -> record -> {
-            System.out.format("%s%n", record.getValue().toStringUtf8());
+        Flux.just("repeated", "averages")
+                .flatMap(topic ->
+                    stub.subscribe(subscribeRequestFor(topic))
+                            .filter(SubscribeReply::hasAssignment)
+                            .map(SubscribeReply::getAssignment)
+                            .map(Consumer::receiveRequestForAssignment)
+                            .flatMap(stub::receive)
+                            .doOnNext(rr -> System.out.format("%s: %s%n", topic, rr.getRecord().getValue().toStringUtf8()))
+                ).blockLast();
 
-            // simulate processing
-            return Mono.delay(Duration.ofMillis(0));
-        };
-
-        stub
-                .subscribe(subscribeAction)
-                .filter(it -> it.getReplyCase() == SubscribeReply.ReplyCase.ASSIGNMENT)
-                .map(SubscribeReply::getAssignment)
-                .doOnNext(assignment -> System.out.format("Assigned to partition %d%n", assignment.getPartition()))
-                .flatMap(assignment -> stub
-                        // Start receiving the events from a partition
-                        .receive(ReceiveRequest.newBuilder().setAssignment(assignment).build())
-                        .window(1000) // ACK every 1000th record
-                        .concatMap(
-                                batch -> batch
-                                        .map(ReceiveReply::getRecord)
-                                        .delayUntil(businessLogic.apply(assignment.getPartition()))
-                                        .sample(Duration.ofSeconds(5)) // ACK every 5 seconds
-                                        .onBackpressureLatest()
-                                        .delayUntil(record -> {
-                                            System.out.format("ACKing partition %d offset %d%n", assignment.getPartition(), record.getOffset());
-                                            return stub.ack(
-                                                    AckRequest.newBuilder()
-                                                            .setAssignment(assignment)
-                                                            .setOffset(record.getOffset())
-                                                            .build()
-                                            );
-                                        }),
-                                1
-                        )
-                )
-                .blockLast();
     }
+
+    private static SubscribeRequest subscribeRequestFor(String topic) {
+        return SubscribeRequest.newBuilder()
+                .setTopic(topic)
+                .setGroup("my-group")
+                .setAutoOffsetReset(AutoOffsetReset.LATEST)
+                .build();
+    }
+
+    private static ReceiveRequest receiveRequestForAssignment(Assignment assignment) {
+        return ReceiveRequest.newBuilder().setAssignment(assignment).build();
+    }
+
 
 }

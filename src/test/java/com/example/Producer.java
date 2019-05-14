@@ -8,16 +8,15 @@ import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.UUID;
 
 public class Producer {
 
-	private static final String[] numbers = new String[]{"zero", "one", "two", "three", "four", "five"};
+	private static final String[] COLORS = new String[]{"red", "green", "blue", "yellow"};
+
+	private static final int MAX_NUMBER = 5;
 
 	public static void main(String[] args) throws IOException {
 
-        // This variable should point to your Liiklus deployment (possible behind a Load Balancer)
-        //String liiklusTarget = getLiiklusTarget();
         String liiklusTarget = "35.241.239.96:6565";
 
         var channel = NettyChannelBuilder.forTarget(liiklusTarget)
@@ -27,7 +26,7 @@ public class Producer {
 
         var stub = ReactorLiiklusServiceGrpc.newReactorStub(channel);
 
-		Flux.interval(Duration.ofMillis(500L)).map(i -> i % numbers.length).onBackpressureDrop()
+		Flux.interval(Duration.ofMillis(500L)).map(i -> i % MAX_NUMBER)
 				.concatMap(it -> stub.publish(
 						PublishRequest.newBuilder()
 								.setTopic("numbers")
@@ -35,7 +34,8 @@ public class Producer {
 								.setValue(ByteString.copyFromUtf8(it.toString()))
 								.build()
 				)).doOnNext(System.out::println).subscribe();
-		Flux.interval(Duration.ofMillis(600L)).map(i -> numbers[i.intValue() % numbers.length]).onBackpressureDrop()
+
+		Flux.interval(Duration.ofMillis(600L)).map(i -> COLORS[i.intValue() % COLORS.length])
 				.concatMap(it -> stub.publish(
 						PublishRequest.newBuilder()
 								.setTopic("words")

@@ -17,6 +17,7 @@ message Start {
 message Next {
     bytes payload = 1;
     map<string, string> headers = 2;
+//    int32 index = 3;
 }
 
 message Signal {

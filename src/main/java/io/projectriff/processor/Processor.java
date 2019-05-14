@@ -35,31 +35,14 @@ public class Processor {
 
 	private final ReactorRiffGrpc.ReactorRiffStub riffStub;
 
-	/*
-	 * SHORTCOMINGS: Liiklus doesn't support Kafka headers
-	 */
-
-	/*
-	 * Nest steps?
-	 *
-	 * P1 Use cases that actually use multiple inputs/outputs (see KStreams)
-	 *
-	 * Rewrite in go? (action)
-	 *
-	 * Invoker actually supporting several inputs/outputs (action)
-	 *
-	 * ACKs
-	 *
-	 * Think about Processor-based windowing (discussion) Serialization ? Content-based
-	 * topics, etc (discussion)
-	 */
-
 	public static void main(String[] args) throws Exception {
 		var inputAddressableTopics = FullyQualifiedTopic.parseMultiple(System.getenv("INPUTS"));
 		var outputAdressableTopics = FullyQualifiedTopic.parseMultiple(System.getenv("OUTPUTS"));
 		Thread.sleep(5000);
 		var fnChannel = NettyChannelBuilder.forTarget(System.getenv("FUNCTION"))
 				.usePlaintext()
+				.enableRetry()
+				.maxRetryAttempts(3)
 				.build();
 
 		Processor processor = new Processor(
@@ -86,19 +69,22 @@ public class Processor {
 				.flatMap(fullyQualifiedTopic -> {
 					var inputLiiklus = inputLiiklusInstancesPerAddress.get(fullyQualifiedTopic.getGatewayAddress());
 					return inputLiiklus.subscribe(subscribeRequestForInput(fullyQualifiedTopic.getTopic()))
-							.filter(this::isAssignment)
+							.filter(SubscribeReply::hasAssignment)
 							.map(SubscribeReply::getAssignment)
-							.map(this::receiveRequestForAssignment)
+							.map(Processor::receiveRequestForAssignment)
 							.flatMap(inputLiiklus::receive)
+							.doOnNext(rr -> System.out.println("RR " + fullyQualifiedTopic + " " + rr))
 							.map(receiveReply -> toRiffMessage(receiveReply, fullyQualifiedTopic));
 				})
 				.compose(this::riffWindowing)
 				.map(this::invoke)
 				.concatMap(f -> f.concatMap(m -> {
+					System.out.println("INSIDE " + m.getNext());
 					var next = m.getNext();
 					var output = outputs.get(Integer.parseInt(next.getHeadersOrThrow("RiffOutput")));
 					var outputLiiklus = outputLiiklusInstancesPerAddress.get(output.getGatewayAddress());
-					return outputLiiklus.publish(createPublishRequest(next.getPayload(), output.getTopic()));
+					return outputLiiklus.publish(createPublishRequest(next.getPayload(), output.getTopic()))
+							.doOnNext(pr -> System.out.println("PR " + pr));
 				}))
 				.subscribe();
 
@@ -141,7 +127,7 @@ public class Processor {
 				.build();
 	}
 
-	private ReceiveRequest receiveRequestForAssignment(Assignment assignment) {
+	private static ReceiveRequest receiveRequestForAssignment(Assignment assignment) {
 		return ReceiveRequest.newBuilder().setAssignment(assignment).build();
 	}
 
@@ -151,7 +137,6 @@ public class Processor {
 
 	private Signal toRiffMessage(ReceiveReply receiveReply, FullyQualifiedTopic fullyQualifiedTopic) {
 		var inputIndex = inputs.indexOf(fullyQualifiedTopic);
-
 		return Signal.newBuilder()
 				.setNext(
 						Next.newBuilder()
@@ -162,15 +147,11 @@ public class Processor {
 
 	}
 
-	private boolean isAssignment(SubscribeReply reply) {
-		return reply.getReplyCase() == SubscribeReply.ReplyCase.ASSIGNMENT;
-	}
-
 	private SubscribeRequest subscribeRequestForInput(String topic) {
 		return SubscribeRequest.newBuilder()
 				.setTopic(topic)
 				.setGroup(group)
-				.setAutoOffsetReset(SubscribeRequest.AutoOffsetReset.EARLIEST)
+				.setAutoOffsetReset(SubscribeRequest.AutoOffsetReset.LATEST)
 				.build();
 	}
 
