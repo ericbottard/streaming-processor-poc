@@ -8,17 +8,18 @@ import com.github.bsideup.liiklus.protocol.ReceiveRequest;
 import com.github.bsideup.liiklus.protocol.SubscribeReply;
 import com.github.bsideup.liiklus.protocol.SubscribeRequest;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.projectriff.invoker.server.Next;
 import io.projectriff.invoker.server.ReactorRiffGrpc;
 import io.projectriff.invoker.server.Signal;
 import io.projectriff.invoker.server.Start;
+import io.projectriff.processor.serialization.Message;
 import org.jetbrains.annotations.NotNull;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Hooks;
 
 import java.net.ConnectException;
-import java.net.InetAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.time.Duration;
@@ -95,7 +96,7 @@ public class Processor {
                             .map(SubscribeReply::getAssignment)
                             .map(Processor::receiveRequestForAssignment)
                             .flatMap(inputLiiklus::receive)
-                            .map(receiveReply -> toRiffMessage(receiveReply, fullyQualifiedTopic));
+                            .map(receiveReply -> toRiffSignal(receiveReply, fullyQualifiedTopic));
                 })
                 .compose(this::riffWindowing)
                 .map(this::invoke)
@@ -104,7 +105,7 @@ public class Processor {
                             var next = m.getNext();
                             var output = outputs.get(Integer.parseInt(next.getHeadersOrThrow("RiffOutput")));
                             var outputLiiklus = outputLiiklusInstancesPerAddress.get(output.getGatewayAddress());
-                            return outputLiiklus.publish(createPublishRequest(next.getPayload(), output.getTopic()));
+                            return outputLiiklus.publish(createPublishRequest(next, output.getTopic()));
                         })
                 )
                 .blockLast();
@@ -136,9 +137,18 @@ public class Processor {
                 in));
     }
 
-    private PublishRequest createPublishRequest(ByteString payload, String topic) {
+    /**
+     * This converts an RPC representation of a {@link Signal} to an at-rest {@link Message}, and creates a publish request for it.
+     */
+    private PublishRequest createPublishRequest(Next next, String topic) {
+        Message msg = Message.newBuilder()
+                .setPayload(next.getPayload())
+                .setContentType(next.getHeadersOrThrow("Content-Type")) // TODO will come from a field
+                .putAllHeaders(next.getHeadersMap()) // TODO currently contains CT and index, but won't and that's ok
+                .build();
+
         return PublishRequest.newBuilder()
-                .setValue(payload)
+                .setValue(msg.toByteString())
                 .setTopic(topic)
                 .build();
     }
@@ -151,15 +161,27 @@ public class Processor {
         return linear.window(Duration.ofSeconds(60));
     }
 
-    private Signal toRiffMessage(ReceiveReply receiveReply, FullyQualifiedTopic fullyQualifiedTopic) {
+    /**
+     * This converts a liiklus received message (representing an at-rest riff {@link Message}) into an RPC {@link Signal}.
+     */
+    private Signal toRiffSignal(ReceiveReply receiveReply, FullyQualifiedTopic fullyQualifiedTopic) {
         var inputIndex = inputs.indexOf(fullyQualifiedTopic);
-        return Signal.newBuilder()
-                .setNext(
-                        Next.newBuilder()
-                                .setPayload(receiveReply.getRecord().getValue())
-                                .putHeaders("Content-Type", "text/plain")
-                                .putHeaders("RiffInput", String.valueOf(inputIndex)))
-                .build();
+        if (inputIndex == -1) {
+            throw new RuntimeException("Unknown topic: " + fullyQualifiedTopic);
+        }
+        ByteString bytes = receiveReply.getRecord().getValue();
+        try {
+            Message message = Message.parseFrom(bytes);
+            return Signal.newBuilder()
+                    .setNext(
+                            Next.newBuilder()
+                                    .setPayload(message.getPayload())
+                                    .putHeaders("Content-Type", message.getContentType()) // TODO change to field
+                                    .putHeaders("RiffInput", String.valueOf(inputIndex))) // TODO change to explicit field
+                    .build();
+        } catch (InvalidProtocolBufferException e) {
+            throw new RuntimeException(e);
+        }
 
     }
 

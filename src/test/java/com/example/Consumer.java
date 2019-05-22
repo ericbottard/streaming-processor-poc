@@ -2,13 +2,10 @@ package com.example;
 
 import com.github.bsideup.liiklus.protocol.*;
 import com.github.bsideup.liiklus.protocol.SubscribeRequest.AutoOffsetReset;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import org.reactivestreams.Publisher;
+import io.projectriff.processor.serialization.Message;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-
-import java.time.Duration;
-import java.util.function.Function;
 
 public class Consumer {
     public static void main(String[] args) {
@@ -23,16 +20,23 @@ public class Consumer {
 
         var stub = ReactorLiiklusServiceGrpc.newReactorStub(channel);
 
-        Flux.just("repeated", "averages")
+        Flux.just("repeated", "sums")
                 .flatMap(topic ->
                     stub.subscribe(subscribeRequestFor(topic))
                             .filter(SubscribeReply::hasAssignment)
                             .map(SubscribeReply::getAssignment)
                             .map(Consumer::receiveRequestForAssignment)
                             .flatMap(stub::receive)
-                            .doOnNext(rr -> System.out.format("%s: %s%n", topic, rr.getRecord().getValue().toStringUtf8()))
+                            .doOnNext(rr -> System.out.format("%s: %s%n", topic, extractRiffMessage(rr).getPayload().toStringUtf8()))
                 ).blockLast();
+    }
 
+    private static Message extractRiffMessage(ReceiveReply rr) {
+        try {
+            return Message.parseFrom(rr.getRecord().getValue());
+        } catch (InvalidProtocolBufferException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static SubscribeRequest subscribeRequestFor(String topic) {

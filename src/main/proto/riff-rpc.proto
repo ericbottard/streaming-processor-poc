@@ -6,6 +6,7 @@ option java_outer_classname = "Invoker";
 
 package streaming;
 
+// This protobuf definition defines how riff encodes messages on the wire when doing an RPC function invocation.
 service Riff {
        rpc Invoke(stream Signal) returns (stream Signal) {}
 }
