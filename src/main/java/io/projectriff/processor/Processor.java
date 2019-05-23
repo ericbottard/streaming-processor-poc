@@ -1,19 +1,10 @@
 package io.projectriff.processor;
 
-import com.github.bsideup.liiklus.protocol.Assignment;
-import com.github.bsideup.liiklus.protocol.PublishRequest;
-import com.github.bsideup.liiklus.protocol.ReactorLiiklusServiceGrpc;
-import com.github.bsideup.liiklus.protocol.ReceiveReply;
-import com.github.bsideup.liiklus.protocol.ReceiveRequest;
-import com.github.bsideup.liiklus.protocol.SubscribeReply;
-import com.github.bsideup.liiklus.protocol.SubscribeRequest;
+import com.github.bsideup.liiklus.protocol.*;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import io.projectriff.invoker.server.Next;
-import io.projectriff.invoker.server.ReactorRiffGrpc;
-import io.projectriff.invoker.server.Signal;
-import io.projectriff.invoker.server.Start;
+import io.projectriff.invoker.rpc.*;
 import io.projectriff.processor.serialization.Message;
 import org.jetbrains.annotations.NotNull;
 import reactor.core.publisher.Flux;
@@ -23,6 +14,7 @@ import java.net.ConnectException;
 import java.net.Socket;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -100,10 +92,10 @@ public class Processor {
                 })
                 .compose(this::riffWindowing)
                 .map(this::invoke)
-                .concatMap(f ->
-                        f.concatMap(m -> {
-                            var next = m.getNext();
-                            var output = outputs.get(Integer.parseInt(next.getHeadersOrThrow("RiffOutput")));
+                .concatMap(flux ->
+                        flux.concatMap(m -> {
+                            var next = m.getData();
+                            var output = outputs.get(next.getResultIndex());
                             var outputLiiklus = outputLiiklusInstancesPerAddress.get(output.getGatewayAddress());
                             return outputLiiklus.publish(createPublishRequest(next, output.getTopic()));
                         })
@@ -128,23 +120,25 @@ public class Processor {
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
-    private Flux<Signal> invoke(Flux<Signal> in) {
-        var start = Signal.newBuilder()
-                .setStart(Start.newBuilder().setAccept("application/json"))
+    private Flux<OutputSignal> invoke(Flux<InputFrame> in) {
+        var start = InputSignal.newBuilder()
+                .setStart(StartFrame.newBuilder()
+                        .addAllExpectedContentTypes(Collections.nCopies(outputs.size(), "application/json")) // TODO
+                        .build())
                 .build();
         return riffStub.invoke(Flux.concat(
                 Flux.just(start), //
-                in));
+                in.map(frame -> InputSignal.newBuilder().setData(frame).build())));
     }
 
     /**
-     * This converts an RPC representation of a {@link Signal} to an at-rest {@link Message}, and creates a publish request for it.
+     * This converts an RPC representation of a {@link OutputFrame} to an at-rest {@link Message}, and creates a publish request for it.
      */
-    private PublishRequest createPublishRequest(Next next, String topic) {
+    private PublishRequest createPublishRequest(OutputFrame next, String topic) {
         Message msg = Message.newBuilder()
                 .setPayload(next.getPayload())
-                .setContentType(next.getHeadersOrThrow("Content-Type")) // TODO will come from a field
-                .putAllHeaders(next.getHeadersMap()) // TODO currently contains CT and index, but won't and that's ok
+                .setContentType(next.getContentType())
+                .putAllHeaders(next.getHeadersMap())
                 .build();
 
         return PublishRequest.newBuilder()
@@ -162,9 +156,9 @@ public class Processor {
     }
 
     /**
-     * This converts a liiklus received message (representing an at-rest riff {@link Message}) into an RPC {@link Signal}.
+     * This converts a liiklus received message (representing an at-rest riff {@link Message}) into an RPC {@link InputFrame}.
      */
-    private Signal toRiffSignal(ReceiveReply receiveReply, FullyQualifiedTopic fullyQualifiedTopic) {
+    private InputFrame toRiffSignal(ReceiveReply receiveReply, FullyQualifiedTopic fullyQualifiedTopic) {
         var inputIndex = inputs.indexOf(fullyQualifiedTopic);
         if (inputIndex == -1) {
             throw new RuntimeException("Unknown topic: " + fullyQualifiedTopic);
@@ -172,12 +166,10 @@ public class Processor {
         ByteString bytes = receiveReply.getRecord().getValue();
         try {
             Message message = Message.parseFrom(bytes);
-            return Signal.newBuilder()
-                    .setNext(
-                            Next.newBuilder()
-                                    .setPayload(message.getPayload())
-                                    .putHeaders("Content-Type", message.getContentType()) // TODO change to field
-                                    .putHeaders("RiffInput", String.valueOf(inputIndex))) // TODO change to explicit field
+            return InputFrame.newBuilder()
+                    .setPayload(message.getPayload())
+                    .setContentType(message.getContentType())
+                    .setArgIndex(inputIndex)
                     .build();
         } catch (InvalidProtocolBufferException e) {
             throw new RuntimeException(e);
