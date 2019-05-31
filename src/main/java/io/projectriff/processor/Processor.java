@@ -1,10 +1,21 @@
 package io.projectriff.processor;
 
-import com.github.bsideup.liiklus.protocol.*;
+import com.github.bsideup.liiklus.protocol.Assignment;
+import com.github.bsideup.liiklus.protocol.PublishRequest;
+import com.github.bsideup.liiklus.protocol.ReactorLiiklusServiceGrpc;
+import com.github.bsideup.liiklus.protocol.ReceiveReply;
+import com.github.bsideup.liiklus.protocol.ReceiveRequest;
+import com.github.bsideup.liiklus.protocol.SubscribeReply;
+import com.github.bsideup.liiklus.protocol.SubscribeRequest;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import io.projectriff.invoker.rpc.*;
+import io.projectriff.invoker.rpc.InputFrame;
+import io.projectriff.invoker.rpc.InputSignal;
+import io.projectriff.invoker.rpc.OutputFrame;
+import io.projectriff.invoker.rpc.OutputSignal;
+import io.projectriff.invoker.rpc.ReactorRiffGrpc;
+import io.projectriff.invoker.rpc.StartFrame;
 import io.projectriff.processor.serialization.Message;
 import org.jetbrains.annotations.NotNull;
 import reactor.core.publisher.Flux;
@@ -14,7 +25,7 @@ import java.net.ConnectException;
 import java.net.Socket;
 import java.net.URI;
 import java.time.Duration;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -30,6 +41,8 @@ public class Processor {
     private final Map<String, ReactorLiiklusServiceGrpc.ReactorLiiklusServiceStub> outputLiiklusInstancesPerAddress;
 
     private final List<FullyQualifiedTopic> outputs;
+
+    private final List<String> outputContentTypes;
 
     private final String group;
 
@@ -53,7 +66,6 @@ public class Processor {
             }
         }
 
-
         var fnChannel = NettyChannelBuilder.forTarget(System.getenv("FUNCTION"))
                 .usePlaintext()
                 .build();
@@ -61,6 +73,7 @@ public class Processor {
         Processor processor = new Processor(
                 inputAddressableTopics,
                 outputAdressableTopics,
+                discoverOutputContentTypes("OUTPUT_CONTENT_TYPE_", outputAdressableTopics.size()),
                 System.getenv("GROUP"),
                 ReactorRiffGrpc.newReactorStub(fnChannel));
 
@@ -69,17 +82,22 @@ public class Processor {
 
     }
 
-    public Processor(List<FullyQualifiedTopic> inputs, List<FullyQualifiedTopic> outputs, String group,
+    public Processor(List<FullyQualifiedTopic> inputs,
+                     List<FullyQualifiedTopic> outputs,
+                     List<String> outputContentTypes,
+                     String group,
                      ReactorRiffGrpc.ReactorRiffStub riffStub) {
+
         this.inputs = inputs;
         this.outputs = outputs;
         this.inputLiiklusInstancesPerAddress = indexByAddress(inputs);
         this.outputLiiklusInstancesPerAddress = indexByAddress(outputs);
+        this.outputContentTypes = outputContentTypes;
         this.riffStub = riffStub;
         this.group = group;
     }
 
-    public void run() throws InterruptedException {
+    public void run() {
         Flux.fromIterable(inputs)
                 .flatMap(fullyQualifiedTopic -> {
                     var inputLiiklus = inputLiiklusInstancesPerAddress.get(fullyQualifiedTopic.getGatewayAddress());
@@ -123,9 +141,10 @@ public class Processor {
     private Flux<OutputSignal> invoke(Flux<InputFrame> in) {
         var start = InputSignal.newBuilder()
                 .setStart(StartFrame.newBuilder()
-                        .addAllExpectedContentTypes(Collections.nCopies(outputs.size(), "application/json")) // TODO
+                        .addAllExpectedContentTypes(this.outputContentTypes)
                         .build())
                 .build();
+
         return riffStub.invoke(Flux.concat(
                 Flux.just(start), //
                 in.map(frame -> InputSignal.newBuilder().setData(frame).build())));
@@ -185,4 +204,17 @@ public class Processor {
                 .build();
     }
 
+    private static List<String> discoverOutputContentTypes(String keyPrefix, int outputCount) {
+        Map<String, String> environmentVariables = System.getenv();
+        List<String> result = new ArrayList<>(outputCount);
+        for (int i = 0; i < outputCount; i++) {
+            String key = keyPrefix + i;
+            String contentType = environmentVariables.get(key);
+            if (contentType == null) {
+                throw new IllegalArgumentException(String.format("Could not find envvar \"%s\"", key));
+            }
+            result.add(contentType);
+        }
+        return result;
+    }
 }
