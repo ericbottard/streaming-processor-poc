@@ -1,5 +1,6 @@
 package io.projectriff.processor;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.bsideup.liiklus.protocol.Assignment;
 import com.github.bsideup.liiklus.protocol.PublishRequest;
 import com.github.bsideup.liiklus.protocol.ReactorLiiklusServiceGrpc;
@@ -21,11 +22,11 @@ import org.jetbrains.annotations.NotNull;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Hooks;
 
+import java.io.IOException;
 import java.net.ConnectException;
 import java.net.Socket;
 import java.net.URI;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -73,7 +74,7 @@ public class Processor {
         Processor processor = new Processor(
                 inputAddressableTopics,
                 outputAdressableTopics,
-                discoverOutputContentTypes("OUTPUT_CONTENT_TYPE_", outputAdressableTopics.size()),
+                parseContentTypes(System.getenv("OUTPUT_CONTENT_TYPES"), outputAdressableTopics.size()),
                 System.getenv("GROUP"),
                 ReactorRiffGrpc.newReactorStub(fnChannel));
 
@@ -204,17 +205,18 @@ public class Processor {
                 .build();
     }
 
-    private static List<String> discoverOutputContentTypes(String keyPrefix, int outputCount) {
-        Map<String, String> environmentVariables = System.getenv();
-        List<String> result = new ArrayList<>(outputCount);
-        for (int i = 0; i < outputCount; i++) {
-            String key = keyPrefix + i;
-            String contentType = environmentVariables.get(key);
-            if (contentType == null) {
-                throw new IllegalArgumentException(String.format("Could not find envvar \"%s\"", key));
+    private static List<String> parseContentTypes(String json, int outputCount) {
+        try {
+            List<String> contentTypes = new ObjectMapper().readValue(json, StreamOutputContentTypes.class).getContentTypes();
+            int actualSize = contentTypes.size();
+            if (actualSize != outputCount) {
+                throw new RuntimeException(
+                        String.format("Expected %d output stream content type(s), got %d.%n\tSee %s", outputCount, actualSize, json)
+                );
             }
-            result.add(contentType);
+            return contentTypes;
+        } catch (IOException e) {
+            throw new RuntimeException(e.getMessage(), e);
         }
-        return result;
     }
 }
