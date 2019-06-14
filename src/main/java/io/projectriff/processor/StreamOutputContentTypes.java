@@ -15,6 +15,11 @@ import java.util.stream.Collectors;
 
 import static java.util.Comparator.comparingInt;
 
+/**
+ * Used to serialize configuration about output content-types.
+ *
+ * @author Florent Biville
+ */
 public class StreamOutputContentTypes {
 
     private final List<StreamOutputContentType> outputs;

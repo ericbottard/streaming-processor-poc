@@ -5,6 +5,14 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+/**
+ * A FullyQualifiedTopic captures the name of a topic as well as the address of the (liiklus) gateway
+ * that is responsible for it. This allows riff to support multiple gateways (and hence maybe multiple
+ * backing broker technologies) until liiklus supports that itself, if ever.
+ *
+ * @author Florent Biville
+ * @author Eric Bottard
+ */
 public class FullyQualifiedTopic {
 
     private final String gatewayAddress;
@@ -50,7 +58,7 @@ public class FullyQualifiedTopic {
 
     @Override
     public String toString() {
-        return "AddressableTopic{" +
+        return "FullyQualifiedTopic{" +
                 "gatewayAddress='" + gatewayAddress + '\'' +
                 ", topic='" + topic + '\'' +
                 '}';

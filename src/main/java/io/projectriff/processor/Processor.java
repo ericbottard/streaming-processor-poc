@@ -1,24 +1,12 @@
 package io.projectriff.processor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.bsideup.liiklus.protocol.Assignment;
-import com.github.bsideup.liiklus.protocol.PublishRequest;
-import com.github.bsideup.liiklus.protocol.ReactorLiiklusServiceGrpc;
-import com.github.bsideup.liiklus.protocol.ReceiveReply;
-import com.github.bsideup.liiklus.protocol.ReceiveRequest;
-import com.github.bsideup.liiklus.protocol.SubscribeReply;
-import com.github.bsideup.liiklus.protocol.SubscribeRequest;
+import com.github.bsideup.liiklus.protocol.*;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import io.projectriff.invoker.rpc.InputFrame;
-import io.projectriff.invoker.rpc.InputSignal;
-import io.projectriff.invoker.rpc.OutputFrame;
-import io.projectriff.invoker.rpc.OutputSignal;
-import io.projectriff.invoker.rpc.ReactorRiffGrpc;
-import io.projectriff.invoker.rpc.StartFrame;
+import io.projectriff.invoker.rpc.*;
 import io.projectriff.processor.serialization.Message;
-import org.jetbrains.annotations.NotNull;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Hooks;
 
@@ -26,37 +14,123 @@ import java.io.IOException;
 import java.net.ConnectException;
 import java.net.Socket;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * Main driver class for the streaming processor.
+ *
+ * <p>Continually pumps data from one or several input streams (see {@code riff-serialization.proto} for this so-called "at rest" format),
+ * arranges messages in invocation windows and invokes the riff function over RPC by multiplexing messages from several
+ * streams into one RPC channel (see {@code riff-rpc.proto} for the wire format).
+ * On the way back, performs the opposite operations: de-muxes results and serializes them back to the corresponding
+ * output streams.</p>
+ *
+ * @author Eric Bottard
+ * @author Florent Biville
+ */
 public class Processor {
 
-    public static final int NUM_RETRIES = 20;
+    /**
+     * ENV VAR key holding the coordinates of the input streams, as a comma separated list of {@code gatewayAddress:port/streamName}.
+     *
+     * @see FullyQualifiedTopic
+     */
+    public static final String INPUTS = "INPUTS";
 
-    private final Map<String, ReactorLiiklusServiceGrpc.ReactorLiiklusServiceStub> inputLiiklusInstancesPerAddress;
+    /**
+     * ENV VAR key holding the coordinates of the output streams, as a comma separated list of {@code gatewayAddress:port/streamName}.
+     *
+     * @see FullyQualifiedTopic
+     */
+    public static final String OUTPUTS = "OUTPUTS";
 
+    /**
+     * ENV VAR key holding the address of the function RPC, as a {@code host:port} string.
+     */
+    public static final String FUNCTION = "FUNCTION";
+
+    /**
+     * ENV VAR key holding the serialized list of content-types expected on the output streams.
+     *
+     * @see StreamOutputContentTypes
+     */
+    public static final String OUTPUT_CONTENT_TYPES = "OUTPUT_CONTENT_TYPES";
+
+    /**
+     * ENV VAR key holding the consumer group string this process should use.
+     */
+    public static final String GROUP = "GROUP";
+
+    /** The number of retries when testing http connection to the function. */
+    private static final int NUM_RETRIES = 20;
+
+    /**
+     * Keeps track of a single gRPC stub per gateway address.
+     */
+    private final Map<String, ReactorLiiklusServiceGrpc.ReactorLiiklusServiceStub> liiklusInstancesPerAddress;
+
+    /** The ordered input streams for the function, in parsed form. */
     private final List<FullyQualifiedTopic> inputs;
 
-    private final Map<String, ReactorLiiklusServiceGrpc.ReactorLiiklusServiceStub> outputLiiklusInstancesPerAddress;
-
+    /** The ordered output streams for the function, in parsed form. */
     private final List<FullyQualifiedTopic> outputs;
 
     private final List<String> outputContentTypes;
 
+    /**
+     * The consumer group string this process will use to identify itself when reading from the input streams.
+     */
     private final String group;
 
+    /**
+     * The RPC stub used to communicate with the function process.
+     *
+     * @see "riff-rpc.proto for the wire format and service definition"
+     */
     private final ReactorRiffGrpc.ReactorRiffStub riffStub;
 
     public static void main(String[] args) throws Exception {
-        var inputAddressableTopics = FullyQualifiedTopic.parseMultiple(System.getenv("INPUTS"));
-        var outputAdressableTopics = FullyQualifiedTopic.parseMultiple(System.getenv("OUTPUTS"));
+
+        checkEnvironmentVariables();
 
         Hooks.onOperatorDebug();
 
+        String functionAddress = System.getenv(FUNCTION);
 
-        URI uri = new URI("http://" + System.getenv("FUNCTION"));
+        assertHttpConnectivity(functionAddress);
+
+        var fnChannel = NettyChannelBuilder.forTarget(functionAddress)
+                .usePlaintext()
+                .build();
+
+        var inputAddressableTopics = FullyQualifiedTopic.parseMultiple(System.getenv(INPUTS));
+        var outputAdressableTopics = FullyQualifiedTopic.parseMultiple(System.getenv(OUTPUTS));
+        var processor = new Processor(
+                inputAddressableTopics,
+                outputAdressableTopics,
+                parseContentTypes(System.getenv(OUTPUT_CONTENT_TYPES), outputAdressableTopics.size()),
+                System.getenv(GROUP),
+                ReactorRiffGrpc.newReactorStub(fnChannel));
+
+        processor.run();
+
+    }
+
+    private static void checkEnvironmentVariables() {
+        List<String> envVars = Arrays.asList(INPUTS, OUTPUTS, OUTPUT_CONTENT_TYPES, FUNCTION, GROUP);
+        if (envVars.stream()
+                .anyMatch(v -> (System.getenv(v) == null || System.getenv(v).trim().length() == 0))) {
+            System.err.format("Missing one of the following environment variables: %s%n", envVars);
+            envVars.forEach(v -> System.err.format("  %s = %s%n", v, System.getenv(v)));
+            System.exit(1);
+        }
+    }
+
+    private static void assertHttpConnectivity(String functionAddress) throws URISyntaxException, IOException, InterruptedException {
+        URI uri = new URI("http://" + functionAddress);
         for (int i = 1; i <= NUM_RETRIES; i++) {
             try (Socket s = new Socket(uri.getHost(), uri.getPort())) {
             } catch (ConnectException t) {
@@ -66,21 +140,6 @@ public class Processor {
                 Thread.sleep(i * 100);
             }
         }
-
-        var fnChannel = NettyChannelBuilder.forTarget(System.getenv("FUNCTION"))
-                .usePlaintext()
-                .build();
-
-        Processor processor = new Processor(
-                inputAddressableTopics,
-                outputAdressableTopics,
-                parseContentTypes(System.getenv("OUTPUT_CONTENT_TYPES"), outputAdressableTopics.size()),
-                System.getenv("GROUP"),
-                ReactorRiffGrpc.newReactorStub(fnChannel));
-
-
-        processor.run();
-
     }
 
     public Processor(List<FullyQualifiedTopic> inputs,
@@ -91,8 +150,10 @@ public class Processor {
 
         this.inputs = inputs;
         this.outputs = outputs;
-        this.inputLiiklusInstancesPerAddress = indexByAddress(inputs);
-        this.outputLiiklusInstancesPerAddress = indexByAddress(outputs);
+        var allGateways = new HashSet<>(inputs);
+        allGateways.addAll(outputs);
+
+        this.liiklusInstancesPerAddress = indexByAddress(allGateways);
         this.outputContentTypes = outputContentTypes;
         this.riffStub = riffStub;
         this.group = group;
@@ -101,7 +162,7 @@ public class Processor {
     public void run() {
         Flux.fromIterable(inputs)
                 .flatMap(fullyQualifiedTopic -> {
-                    var inputLiiklus = inputLiiklusInstancesPerAddress.get(fullyQualifiedTopic.getGatewayAddress());
+                    var inputLiiklus = liiklusInstancesPerAddress.get(fullyQualifiedTopic.getGatewayAddress());
                     return inputLiiklus.subscribe(subscribeRequestForInput(fullyQualifiedTopic.getTopic()))
                             .filter(SubscribeReply::hasAssignment)
                             .map(SubscribeReply::getAssignment)
@@ -115,16 +176,15 @@ public class Processor {
                         flux.concatMap(m -> {
                             var next = m.getData();
                             var output = outputs.get(next.getResultIndex());
-                            var outputLiiklus = outputLiiklusInstancesPerAddress.get(output.getGatewayAddress());
+                            var outputLiiklus = liiklusInstancesPerAddress.get(output.getGatewayAddress());
                             return outputLiiklus.publish(createPublishRequest(next, output.getTopic()));
                         })
                 )
                 .blockLast();
     }
 
-    @NotNull
     private static Map<String, ReactorLiiklusServiceGrpc.ReactorLiiklusServiceStub> indexByAddress(
-            List<FullyQualifiedTopic> fullyQualifiedTopics) {
+            Collection<FullyQualifiedTopic> fullyQualifiedTopics) {
         return fullyQualifiedTopics.stream()
                 .map(FullyQualifiedTopic::getGatewayAddress)
                 .distinct()
@@ -152,7 +212,7 @@ public class Processor {
     }
 
     /**
-     * This converts an RPC representation of a {@link OutputFrame} to an at-rest {@link Message}, and creates a publish request for it.
+     * This converts an RPC representation of an {@link OutputFrame} to an at-rest {@link Message}, and creates a publish request for it.
      */
     private PublishRequest createPublishRequest(OutputFrame next, String topic) {
         Message msg = Message.newBuilder()
