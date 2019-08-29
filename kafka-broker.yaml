@@ -60,7 +60,7 @@ kind: Service
 metadata:
   name: kafkabroker
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: kafka-broker
   ports:
